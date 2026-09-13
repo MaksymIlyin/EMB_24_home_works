@@ -1,19 +1,40 @@
-#include <Arduino.h>
+#include "Arduino.h"
 
-#define LED_PIN_R 47
-#define LED_PIN_B 48
+#define LED_PIN 4
+
+// PWM settings
+#define PWM_FREQ 200
+#define PWM_RESOLUTION 8
+#define DELAY 5
+
+const int CH = 0;
 
 void setup() {
-  pinMode(LED_PIN_R, OUTPUT);
-  pinMode(LED_PIN_B, OUTPUT);
+  Serial.begin(115200);
+  Serial.println("ESP32 PWM Fade Demo");
+
+  // Attaching PIN to PMV
+  ledcSetup(CH, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(LED_PIN, CH);
 }
 
 void loop() {
-  digitalWrite(LED_PIN_R, 1);
-  digitalWrite(LED_PIN_B, 0);
+  // --- Fade In ---
+  Serial.println("Fading IN...");
+
+  for (int dutyCycle = 0; dutyCycle <= 255; dutyCycle++) {
+    ledcWrite(CH, dutyCycle);
+    delay(DELAY);
+  }
+
   delay(500);
 
-  digitalWrite(LED_PIN_B, 1);
-  digitalWrite(LED_PIN_R, 0);
+  // --- Fade Out ---
+  Serial.println("Fading OUT...");
+  for (int dutyCycle = 255; dutyCycle >= 0; dutyCycle--) {
+    ledcWrite(CH, dutyCycle);
+    delay(DELAY); // Швидкість зміни
+  }
+
   delay(500);
 }
