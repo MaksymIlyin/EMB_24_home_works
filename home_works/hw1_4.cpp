@@ -37,14 +37,12 @@ void loop()
     if (bootPressed & slowMode == false)
     {
         slowMode = true;
-        delay(500);
         Serial.println("Slow down");
     }
 
     if (buttonPressed & slowMode == true)
     {
         slowMode = false;
-        delay(500);
         Serial.println("Speed up");
     }
 
