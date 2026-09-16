@@ -34,15 +34,17 @@ void loop()
     const bool bootPressed = digitalRead(BOOT_PIN) == LOW;
     const bool buttonPressed = digitalRead(BUTTON_PIN) == LOW;
 
-    if (bootPressed & slowMode == false)
+    if (bootPressed && slowMode == false)
     {
         slowMode = true;
+        delay(500);
         Serial.println("Slow down");
     }
 
-    if (buttonPressed & slowMode == true)
+    if (buttonPressed && slowMode == true)
     {
         slowMode = false;
+        delay(500);
         Serial.println("Speed up");
     }
 
