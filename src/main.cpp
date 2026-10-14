@@ -1,31 +1,51 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
-uint8_t pressedCount = 0;
 
+uint32_t pressedCount = 0;
 
-volatile boolean eventOccurred = false;
+volatile bool eventOccurred = false;
+volatile uint32_t interruptMicros = 0;
 
 void quickInterruptHandler() {
+    interruptMicros = micros();
     eventOccurred = true;
 }
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
+
     pinMode(BUTTON_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), quickInterruptHandler, FALLING);
+
+    attachInterrupt(
+        digitalPinToInterrupt(BUTTON_PIN),
+        quickInterruptHandler,
+        FALLING
+    );
 }
 
 void loop() {
-    const uint32_t startMicros = micros();
+    bool hasEvent = false;
+    uint32_t eventTime = 0;
+
+    noInterrupts();
     if (eventOccurred) {
+        eventTime = interruptMicros;
+        eventOccurred = false;
+        hasEvent = true;
+    }
+    interrupts();
+
+    if (hasEvent) {
         pressedCount++;
-        const uint32_t delayMicros = micros() - startMicros;
+
+        const uint32_t delayMicros = micros() - eventTime;
+
         Serial.print("Button pressed: ");
         Serial.print(pressedCount);
-        Serial.print("| Took time: ");
+        Serial.print(" | Took time: ");
         Serial.print(delayMicros);
-        Serial.println(" μs");
-        eventOccurred = false;
+        Serial.println(" us");
     }
 }
