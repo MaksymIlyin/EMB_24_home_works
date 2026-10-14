@@ -1,15 +1,16 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
-
-uint32_t pressedCount = 0;
-uint32_t lastAcceptedMicros = 0;
+constexpr uint32_t DEBOUNCE_MS = 50;
 
 volatile bool eventOccurred = false;
-volatile uint32_t interruptMicros = 0;
+
+uint32_t pressedCount = 0;
+uint32_t pressStartMillis = 0;
+
+bool buttonPressed = false;
 
 void quickInterruptHandler() {
-    interruptMicros = micros();
     eventOccurred = true;
 }
 
@@ -27,42 +28,33 @@ void setup() {
 }
 
 void loop() {
-    bool hasEvent = false;
-    uint32_t eventTime = 0;
+    bool hasEvent;
 
     noInterrupts();
-    if (eventOccurred) {
-        eventTime = interruptMicros;
-        eventOccurred = false;
-        hasEvent = true;
-    }
+    hasEvent = eventOccurred;
+    eventOccurred = false;
     interrupts();
 
-    if (!hasEvent) {
-        return;
+    if (hasEvent && digitalRead(BUTTON_PIN) == LOW && !buttonPressed) {
+        pressStartMillis = millis();
+
+        while (digitalRead(BUTTON_PIN) == LOW) {
+            if (millis() - pressStartMillis >= DEBOUNCE_MS) {
+                buttonPressed = true;
+                pressedCount++;
+
+                Serial.print("Button pressed: ");
+                Serial.print(pressedCount);
+                Serial.print(" | Confirmation delay: ");
+                Serial.print(millis() - pressStartMillis);
+                Serial.println(" ms");
+
+                break;
+            }
+        }
     }
 
-    if (digitalRead(BUTTON_PIN) != LOW) {
-        Serial.println("Ignored: button released");
-        return;
+    if (digitalRead(BUTTON_PIN) == HIGH) {
+        buttonPressed = false;
     }
-
-    const uint32_t intervalMicros =
-        eventTime - lastAcceptedMicros;
-
-    lastAcceptedMicros = eventTime;
-    pressedCount++;
-
-    const uint32_t processingDelay = micros() - eventTime;
-
-    Serial.print("Button pressed: ");
-    Serial.print(pressedCount);
-
-    Serial.print(" | Interval: ");
-    Serial.print(intervalMicros);
-    Serial.print(" us");
-
-    Serial.print(" | Processing delay: ");
-    Serial.print(processingDelay);
-    Serial.println(" us");
 }
