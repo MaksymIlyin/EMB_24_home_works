@@ -24,14 +24,9 @@ void setup() {
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    // Починаємо з фактичного стану кнопки
     lastRawState = digitalRead(BUTTON_PIN);
     lastStateChangeMillis = millis();
     lastPollMillis = millis();
-
-    if (lastRawState == LOW) {
-        buttonState = ButtonState::PRESSED;
-    }
 }
 
 void loop() {
