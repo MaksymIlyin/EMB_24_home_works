@@ -1,7 +1,6 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
-constexpr uint32_t DEBOUNCE_INTERVAL = 50'000; // 50 ms
 
 uint32_t pressedCount = 0;
 uint32_t lastAcceptedMicros = 0;
@@ -23,7 +22,7 @@ void setup() {
     attachInterrupt(
         digitalPinToInterrupt(BUTTON_PIN),
         quickInterruptHandler,
-        FALLING
+        CHANGE
     );
 }
 
@@ -43,9 +42,8 @@ void loop() {
         return;
     }
 
-    // Debounce
-    if (eventTime - lastAcceptedMicros < DEBOUNCE_INTERVAL) {
-        Serial.println("Ignored: debounce");
+    if (digitalRead(BUTTON_PIN) != LOW) {
+        Serial.println("Ignored: button released");
         return;
     }
 
