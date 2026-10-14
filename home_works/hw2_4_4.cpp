@@ -1,0 +1,78 @@
+#include <Arduino.h>
+
+constexpr uint8_t BUTTON_PIN = 18;
+constexpr uint32_t POLL_INTERVAL = 5;
+constexpr uint32_t DEBOUNCE_INTERVAL = 50;
+
+enum class ButtonState {
+    RELEASED,
+    PRESSED
+};
+
+ButtonState buttonState = ButtonState::RELEASED;
+
+uint32_t pressedCount = 0;
+uint32_t lastPollMillis = 0;
+uint32_t lastStateChangeMillis = 0;
+uint32_t pressDetectedMillis = 0;
+
+int lastRawState = HIGH;
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    // Починаємо з фактичного стану кнопки
+    lastRawState = digitalRead(BUTTON_PIN);
+    lastStateChangeMillis = millis();
+    lastPollMillis = millis();
+
+    if (lastRawState == LOW) {
+        buttonState = ButtonState::PRESSED;
+    }
+}
+
+void loop() {
+    const uint32_t currentMillis = millis();
+
+    if (currentMillis - lastPollMillis < POLL_INTERVAL) {
+        return;
+    }
+
+    lastPollMillis = currentMillis;
+
+    const int rawState = digitalRead(BUTTON_PIN);
+
+    if (rawState != lastRawState) {
+        lastRawState = rawState;
+        lastStateChangeMillis = currentMillis;
+
+        if (rawState == LOW) {
+            pressDetectedMillis = currentMillis;
+        }
+    }
+
+    if (currentMillis - lastStateChangeMillis < DEBOUNCE_INTERVAL) {
+        return;
+    }
+
+    if (rawState == LOW && buttonState == ButtonState::RELEASED) {
+        buttonState = ButtonState::PRESSED;
+        pressedCount++;
+
+        const uint32_t debounceDelay =
+            currentMillis - pressDetectedMillis;
+
+        Serial.print("Button pressed: ");
+        Serial.print(pressedCount);
+        Serial.print(" | Debounce delay: ");
+        Serial.print(debounceDelay);
+        Serial.println(" ms");
+    } else if (rawState == HIGH &&
+               buttonState == ButtonState::PRESSED) {
+        buttonState = ButtonState::RELEASED;
+        Serial.println("Button released");
+    }
+}

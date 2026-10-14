@@ -1,17 +1,22 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
+constexpr uint32_t POLL_INTERVAL = 5;
+constexpr uint32_t DEBOUNCE_INTERVAL = 50;
+
+enum class ButtonState {
+    RELEASED,
+    PRESSED
+};
+
+ButtonState buttonState = ButtonState::RELEASED;
 
 uint32_t pressedCount = 0;
-uint32_t lastAcceptedMicros = 0;
+uint32_t lastPollMillis = 0;
+uint32_t lastStateChangeMillis = 0;
+uint32_t pressDetectedMillis = 0;
 
-volatile bool eventOccurred = false;
-volatile uint32_t interruptMicros = 0;
-
-void quickInterruptHandler() {
-    interruptMicros = micros();
-    eventOccurred = true;
-}
+int lastRawState = HIGH;
 
 void setup() {
     Serial.begin(115200);
@@ -19,50 +24,55 @@ void setup() {
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    attachInterrupt(
-        digitalPinToInterrupt(BUTTON_PIN),
-        quickInterruptHandler,
-        CHANGE
-    );
+    // Починаємо з фактичного стану кнопки
+    lastRawState = digitalRead(BUTTON_PIN);
+    lastStateChangeMillis = millis();
+    lastPollMillis = millis();
+
+    if (lastRawState == LOW) {
+        buttonState = ButtonState::PRESSED;
+    }
 }
 
 void loop() {
-    bool hasEvent = false;
-    uint32_t eventTime = 0;
+    const uint32_t currentMillis = millis();
 
-    noInterrupts();
-    if (eventOccurred) {
-        eventTime = interruptMicros;
-        eventOccurred = false;
-        hasEvent = true;
-    }
-    interrupts();
-
-    if (!hasEvent) {
+    if (currentMillis - lastPollMillis < POLL_INTERVAL) {
         return;
     }
 
-    if (digitalRead(BUTTON_PIN) != LOW) {
-        Serial.println("Ignored: button released");
+    lastPollMillis = currentMillis;
+
+    const int rawState = digitalRead(BUTTON_PIN);
+
+    if (rawState != lastRawState) {
+        lastRawState = rawState;
+        lastStateChangeMillis = currentMillis;
+
+        if (rawState == LOW) {
+            pressDetectedMillis = currentMillis;
+        }
+    }
+
+    if (currentMillis - lastStateChangeMillis < DEBOUNCE_INTERVAL) {
         return;
     }
 
-    const uint32_t intervalMicros =
-        eventTime - lastAcceptedMicros;
+    if (rawState == LOW && buttonState == ButtonState::RELEASED) {
+        buttonState = ButtonState::PRESSED;
+        pressedCount++;
 
-    lastAcceptedMicros = eventTime;
-    pressedCount++;
+        const uint32_t debounceDelay =
+            currentMillis - pressDetectedMillis;
 
-    const uint32_t processingDelay = micros() - eventTime;
-
-    Serial.print("Button pressed: ");
-    Serial.print(pressedCount);
-
-    Serial.print(" | Interval: ");
-    Serial.print(intervalMicros);
-    Serial.print(" us");
-
-    Serial.print(" | Processing delay: ");
-    Serial.print(processingDelay);
-    Serial.println(" us");
+        Serial.print("Button pressed: ");
+        Serial.print(pressedCount);
+        Serial.print(" | Debounce delay: ");
+        Serial.print(debounceDelay);
+        Serial.println(" ms");
+    } else if (rawState == HIGH &&
+               buttonState == ButtonState::PRESSED) {
+        buttonState = ButtonState::RELEASED;
+        Serial.println("Button released");
+    }
 }
