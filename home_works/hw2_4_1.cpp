@@ -25,6 +25,7 @@ void loop() {
         Serial.print(pressedCount);
         Serial.print("| Took time: ");
         Serial.print(delayMicros);
+        Serial.println(" μs");
         eventOccurred = false;
     }
 }
