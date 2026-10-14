@@ -1,12 +1,12 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
-constexpr uint32_t DEBOUNCE_MS = 50;
+constexpr uint32_t DEBOUNCE = 50; // micro seconds
 
 volatile bool eventOccurred = false;
 
 uint32_t pressedCount = 0;
-uint32_t pressStartMillis = 0;
+uint32_t pressStartMicros= 0;
 
 bool buttonPressed = false;
 
@@ -36,18 +36,18 @@ void loop() {
     interrupts();
 
     if (hasEvent && digitalRead(BUTTON_PIN) == LOW && !buttonPressed) {
-        pressStartMillis = millis();
+        pressStartMicros = micros();
 
         while (digitalRead(BUTTON_PIN) == LOW) {
-            if (millis() - pressStartMillis >= DEBOUNCE_MS) {
+            if (micros() - pressStartMicros >= DEBOUNCE) {
                 buttonPressed = true;
                 pressedCount++;
 
                 Serial.print("Button pressed: ");
                 Serial.print(pressedCount);
                 Serial.print(" | Confirmation delay: ");
-                Serial.print(millis() - pressStartMillis);
-                Serial.println(" ms");
+                Serial.print(micros() - pressStartMicros);
+                Serial.println(" us");
 
                 break;
             }
