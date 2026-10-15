@@ -30,26 +30,23 @@ void setup() {
 }
 
 void loop() {
-    const uint32_t currentMillis = millis();
-
-    if (currentMillis - lastPollMillis < POLL_INTERVAL) {
+    if (millis() - lastPollMillis < POLL_INTERVAL) {
         return;
     }
-
-    lastPollMillis = currentMillis;
+    lastPollMillis = millis();
 
     const int rawState = digitalRead(BUTTON_PIN);
 
     if (rawState != lastRawState) {
         lastRawState = rawState;
-        lastStateChangeMillis = currentMillis;
+        lastStateChangeMillis = millis();
 
         if (rawState == LOW) {
-            pressDetectedMillis = currentMillis;
+            pressDetectedMillis = millis();
         }
     }
 
-    if (currentMillis - lastStateChangeMillis < DEBOUNCE_INTERVAL) {
+    if (millis() - lastStateChangeMillis < DEBOUNCE_INTERVAL) {
         return;
     }
 
@@ -57,16 +54,15 @@ void loop() {
         buttonState = ButtonState::PRESSED;
         pressedCount++;
 
-        const uint32_t debounceDelay =
-            currentMillis - pressDetectedMillis;
+        const uint32_t debounceDelay = millis() - pressDetectedMillis;
 
         Serial.print("Button pressed: ");
         Serial.print(pressedCount);
         Serial.print(" | Debounce delay: ");
         Serial.print(debounceDelay);
         Serial.println(" ms");
-    } else if (rawState == HIGH &&
-               buttonState == ButtonState::PRESSED) {
+    } else if (rawState == HIGH && buttonState == ButtonState::PRESSED)
+    {
         buttonState = ButtonState::RELEASED;
         Serial.println("Button released");
     }

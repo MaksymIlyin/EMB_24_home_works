@@ -26,26 +26,15 @@ void setup() {
 }
 
 void loop() {
-    bool hasEvent = false;
-    uint32_t eventTime = 0;
-
-    noInterrupts();
-    if (eventOccurred) {
-        eventTime = interruptMicros;
-        eventOccurred = false;
-        hasEvent = true;
-    }
-    interrupts();
-
-    if (hasEvent) {
+    if (eventOccurred)
+    {
         pressedCount++;
-
-        const uint32_t delayMicros = micros() - eventTime;
-
+        const uint32_t delayMicros = micros() - interruptMicros;
         Serial.print("Button pressed: ");
         Serial.print(pressedCount);
         Serial.print(" | Took time: ");
         Serial.print(delayMicros);
         Serial.println(" us");
+        eventOccurred = false;
     }
 }

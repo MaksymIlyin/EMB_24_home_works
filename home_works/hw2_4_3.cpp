@@ -1,16 +1,17 @@
 #include <Arduino.h>
 
 constexpr uint8_t BUTTON_PIN = 18;
-constexpr uint32_t DEBOUNCE = 50; // micro seconds
-
-volatile bool eventOccurred = false;
+constexpr uint32_t DEBOUNCE = 10; // milli seconds
 
 uint32_t pressedCount = 0;
-uint32_t pressStartMicros= 0;
 
 bool buttonPressed = false;
 
+volatile bool eventOccurred = false;
+volatile uint32_t interruptMillis = 0;
+
 void quickInterruptHandler() {
+    interruptMillis = millis();
     eventOccurred = true;
 }
 
@@ -28,27 +29,18 @@ void setup() {
 }
 
 void loop() {
-    bool hasEvent;
-
-    noInterrupts();
-    hasEvent = eventOccurred;
-    eventOccurred = false;
-    interrupts();
-
-    if (hasEvent && digitalRead(BUTTON_PIN) == LOW && !buttonPressed) {
-        pressStartMicros = micros();
-
+    if (eventOccurred && digitalRead(BUTTON_PIN) == LOW && !buttonPressed)
+    {
         while (digitalRead(BUTTON_PIN) == LOW) {
-            if (micros() - pressStartMicros >= DEBOUNCE) {
+            if (millis() - interruptMillis >= DEBOUNCE) {
                 buttonPressed = true;
                 pressedCount++;
 
                 Serial.print("Button pressed: ");
                 Serial.print(pressedCount);
                 Serial.print(" | Confirmation delay: ");
-                Serial.print(micros() - pressStartMicros);
-                Serial.println(" us");
-
+                Serial.print(millis() - interruptMillis);
+                Serial.println(" ms");
                 break;
             }
         }
