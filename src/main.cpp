@@ -1,69 +1,52 @@
 #include <Arduino.h>
 
-constexpr uint8_t BUTTON_PIN = 18;
-constexpr uint32_t POLL_INTERVAL = 5;
-constexpr uint32_t DEBOUNCE_INTERVAL = 50;
+constexpr uint8_t FAN_PIN  = 18;
 
-enum class ButtonState {
-    RELEASED,
-    PRESSED
-};
+constexpr ulong PERIOD_SECONDS = 6;
+constexpr ulong ON_SECONDS = 2;
+constexpr ulong OFF_SECONDS = (PERIOD_SECONDS - ON_SECONDS);
 
-ButtonState buttonState = ButtonState::RELEASED;
+constexpr bool FAN_ON_LEVEL = true;
 
-uint32_t pressedCount = 0;
-uint32_t lastPollMillis = 0;
-uint32_t lastStateChangeMillis = 0;
-uint32_t pressDetectedMillis = 0;
+hw_timer_t* timer = nullptr;
 
-int lastRawState = HIGH;
+volatile uint32_t elapsedSeconds = 0;
+volatile bool fanIsOn = false;
+
+
+void IRAM_ATTR onTimer()
+{
+    elapsedSeconds += 1;
+
+    const uint32_t currentDuration = fanIsOn ? ON_SECONDS : OFF_SECONDS;
+
+    if (elapsedSeconds >= currentDuration)
+    {
+        elapsedSeconds = 0;
+        fanIsOn = !fanIsOn;
+
+        const uint32_t level = fanIsOn ? FAN_ON_LEVEL : !FAN_ON_LEVEL;
+
+        digitalWrite(FAN_PIN, level);
+    }
+}
 
 void setup() {
-    Serial.begin(115200);
-    delay(1000);
+    pinMode(FAN_PIN, OUTPUT);
 
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    digitalWrite(FAN_PIN, FAN_ON_LEVEL);
 
-    lastRawState = digitalRead(BUTTON_PIN);
-    lastStateChangeMillis = millis();
-    lastPollMillis = millis();
+    timer = timerBegin(1000000);
+
+    if (timer == nullptr) {
+        digitalWrite(FAN_PIN, !FAN_ON_LEVEL);
+        return;
+    }
+
+    timerAttachInterrupt(timer, &onTimer);
+
+    timerAlarm(timer, 1000000, true, 0);
 }
 
 void loop() {
-    if (millis() - lastPollMillis < POLL_INTERVAL) {
-        return;
-    }
-    lastPollMillis = millis();
-
-    const int rawState = digitalRead(BUTTON_PIN);
-
-    if (rawState != lastRawState) {
-        lastRawState = rawState;
-        lastStateChangeMillis = millis();
-
-        if (rawState == LOW) {
-            pressDetectedMillis = millis();
-        }
-    }
-
-    if (millis() - lastStateChangeMillis < DEBOUNCE_INTERVAL) {
-        return;
-    }
-
-    if (rawState == LOW && buttonState == ButtonState::RELEASED) {
-        buttonState = ButtonState::PRESSED;
-        pressedCount++;
-
-        const uint32_t debounceDelay = millis() - pressDetectedMillis;
-
-        Serial.print("Button pressed: ");
-        Serial.print(pressedCount);
-        Serial.print(" | Debounce delay: ");
-        Serial.print(debounceDelay);
-        Serial.println(" ms");
-    } else if (rawState == HIGH && buttonState == ButtonState::PRESSED)
-    {
-        buttonState = ButtonState::RELEASED;
-        Serial.println("Button released");
-    }
 }
