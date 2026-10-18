@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/semphr.h"
 
 #include "driver/gpio.h"
@@ -10,13 +11,14 @@
 #include "esp_timer.h"
 
 #define BUTTON_PIN GPIO_NUM_18
+#define DEBOUNCE_INTERVAL_MS 50
 
 static const char *TAG = "BUTTON";
 
 static uint32_t pressedCount = 0;
-static int64_t interruptTimeUs = 0;
 
 static SemaphoreHandle_t buttonSemaphore;
+static int64_t interruptTimeUs = 0;
 
 static portMUX_TYPE timeMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -68,7 +70,7 @@ void app_main(void)
         )
     );
 
-    ESP_LOGI(TAG, "Button interrupt initialized on GPIO %d", (int)BUTTON_PIN);
+    ESP_LOGI(TAG, "Button initialized on GPIO %d", (int)BUTTON_PIN);
 
     while (1) {
         if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE)
@@ -79,16 +81,20 @@ void app_main(void)
             timestamp = interruptTimeUs;
             portEXIT_CRITICAL(&timeMux);
 
-            pressedCount++;
+            // Debounce: wait 50 ms after the interrupt.
+            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_INTERVAL_MS));
 
-            const int64_t delayUs =
-                esp_timer_get_time() - timestamp;
+            const int64_t processingTimeUs = esp_timer_get_time();
+
+            const int64_t processingDelayMs = (processingTimeUs - timestamp) / 1000;
+
+            pressedCount++;
 
             ESP_LOGI(
                 TAG,
-                "Button pressed: %lu | Took time: %lld us",
+                "Button pressed: %lu | Processing delay: %lld ms",
                 (unsigned long)pressedCount,
-                (long long)delayUs
+                (long long)processingDelayMs
             );
         }
     }
