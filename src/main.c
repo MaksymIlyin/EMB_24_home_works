@@ -1,9 +1,7 @@
 #include <stdint.h>
-#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -11,98 +9,85 @@
 #include "esp_timer.h"
 
 #define BUTTON_PIN GPIO_NUM_18
-#define DEBOUNCE_MS 10
+#define POLL_INTERVAL_MS 10
+#define DEBOUNCE_INTERVAL_MS 50
 
 static const char *TAG = "BUTTON";
 
+typedef enum {
+    BUTTON_RELEASED,
+    BUTTON_PRESSED
+} ButtonState;
+
+static ButtonState buttonState = BUTTON_RELEASED;
+
 static uint32_t pressedCount = 0;
-static bool buttonPressed = false;
+static int64_t lastPollUs = 0;
+static int64_t lastStateChangeUs = 0;
+static int64_t pressDetectedUs = 0;
 
-static SemaphoreHandle_t buttonSemaphore;
-static int64_t interruptTimeUs = 0;
-static portMUX_TYPE timeMux = portMUX_INITIALIZER_UNLOCKED;
-
-static void buttonInterruptHandler(void *arg)
-{
-    const int64_t timestamp = esp_timer_get_time();
-
-    portENTER_CRITICAL_ISR(&timeMux);
-    interruptTimeUs = timestamp;
-    portEXIT_CRITICAL_ISR(&timeMux);
-
-    BaseType_t higherPriorityTaskWoken = pdFALSE;
-
-    xSemaphoreGiveFromISR(
-        buttonSemaphore,
-        &higherPriorityTaskWoken
-    );
-
-    if (higherPriorityTaskWoken == pdTRUE) {
-        portYIELD_FROM_ISR();
-    }
-}
+static int lastRawState = 1;
 
 void app_main(void)
 {
-    buttonSemaphore = xSemaphoreCreateBinary();
-
-    if (buttonSemaphore == NULL) {
-        ESP_LOGE(TAG, "Failed to create semaphore");
-        return;
-    }
-
     const gpio_config_t buttonConfig = {
         .pin_bit_mask = (1ULL << BUTTON_PIN),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_ANYEDGE
+        .intr_type = GPIO_INTR_DISABLE
     };
 
     ESP_ERROR_CHECK(gpio_config(&buttonConfig));
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
 
-    ESP_ERROR_CHECK(
-        gpio_isr_handler_add(
-            BUTTON_PIN,
-            buttonInterruptHandler,
-            NULL
-        )
-    );
+    lastRawState = gpio_get_level(BUTTON_PIN);
 
-    ESP_LOGI(TAG, "Button initialized on GPIO %d", BUTTON_PIN);
+    const int64_t startUs = esp_timer_get_time();
+    lastStateChangeUs = startUs;
+    lastPollUs = startUs;
 
-    while (1) {
-        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
+    while (1)
+    {
+        const int64_t nowUs = esp_timer_get_time();
+        const int rawState = gpio_get_level(BUTTON_PIN);
 
-            int64_t timestamp;
+        if (rawState != lastRawState)
+        {
+            lastRawState = rawState;
+            lastStateChangeUs = nowUs;
 
-            portENTER_CRITICAL(&timeMux);
-            timestamp = interruptTimeUs;
-            portEXIT_CRITICAL(&timeMux);
-
-            // Wait for the signal to stabilize.
-            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
-
-            const int level = gpio_get_level(BUTTON_PIN);
-            const int64_t nowUs = esp_timer_get_time();
-
-            if (level == 0 && !buttonPressed)
+            if (rawState == 0)
             {
-                buttonPressed = true;
+                pressDetectedUs = nowUs;
+            }
+        }
+
+        if (nowUs - lastStateChangeUs >= DEBOUNCE_INTERVAL_MS * 1000) {
+
+            if (rawState == 0 &&
+                buttonState == BUTTON_RELEASED) {
+
+                buttonState = BUTTON_PRESSED;
                 pressedCount++;
 
-                const int64_t confirmationDelayMs = (nowUs - timestamp) / 1000;
+                const uint32_t debounceDelay =
+                    (uint32_t)((nowUs - pressDetectedUs) / 1000);
 
                 ESP_LOGI(
                     TAG,
-                    "Button pressed: %lu | Confirmation delay: %lld ms",
+                    "Button pressed: %lu | Debounce delay: %lu ms",
                     (unsigned long)pressedCount,
-                    (long long)confirmationDelayMs
+                    (unsigned long)debounceDelay
                 );
-            } else if (level == 1) {
-                buttonPressed = false;
+
+            } else if (rawState == 1 &&
+                    buttonState == BUTTON_PRESSED) {
+
+                buttonState = BUTTON_RELEASED;
+                ESP_LOGI(TAG, "Button released");
             }
         }
+
+        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
     }
 }
