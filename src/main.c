@@ -1,5 +1,5 @@
-
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -11,18 +11,18 @@
 #include "esp_timer.h"
 
 #define BUTTON_PIN GPIO_NUM_18
-#define DEBOUNCE_INTERVAL_MS 50
+#define DEBOUNCE_MS 10
 
 static const char *TAG = "BUTTON";
 
 static uint32_t pressedCount = 0;
+static bool buttonPressed = false;
 
 static SemaphoreHandle_t buttonSemaphore;
 static int64_t interruptTimeUs = 0;
-
 static portMUX_TYPE timeMux = portMUX_INITIALIZER_UNLOCKED;
 
-static void IRAM_ATTR buttonInterruptHandler(void *arg)
+static void buttonInterruptHandler(void *arg)
 {
     const int64_t timestamp = esp_timer_get_time();
 
@@ -47,7 +47,7 @@ void app_main(void)
     buttonSemaphore = xSemaphoreCreateBinary();
 
     if (buttonSemaphore == NULL) {
-        ESP_LOGE(TAG, "Failed to create button semaphore");
+        ESP_LOGE(TAG, "Failed to create semaphore");
         return;
     }
 
@@ -56,11 +56,11 @@ void app_main(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE
+        .intr_type = GPIO_INTR_ANYEDGE
     };
 
     ESP_ERROR_CHECK(gpio_config(&buttonConfig));
-    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
 
     ESP_ERROR_CHECK(
         gpio_isr_handler_add(
@@ -70,32 +70,39 @@ void app_main(void)
         )
     );
 
-    ESP_LOGI(TAG, "Button initialized on GPIO %d", (int)BUTTON_PIN);
+    ESP_LOGI(TAG, "Button initialized on GPIO %d", BUTTON_PIN);
 
     while (1) {
-        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE)
-        {
+        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {
+
             int64_t timestamp;
 
             portENTER_CRITICAL(&timeMux);
             timestamp = interruptTimeUs;
             portEXIT_CRITICAL(&timeMux);
 
-            // Debounce: wait 50 ms after the interrupt.
-            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_INTERVAL_MS));
+            // Wait for the signal to stabilize.
+            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
 
-            const int64_t processingTimeUs = esp_timer_get_time();
+            const int level = gpio_get_level(BUTTON_PIN);
+            const int64_t nowUs = esp_timer_get_time();
 
-            const int64_t processingDelayMs = (processingTimeUs - timestamp) / 1000;
+            if (level == 0 && !buttonPressed)
+            {
+                buttonPressed = true;
+                pressedCount++;
 
-            pressedCount++;
+                const int64_t confirmationDelayMs = (nowUs - timestamp) / 1000;
 
-            ESP_LOGI(
-                TAG,
-                "Button pressed: %lu | Processing delay: %lld ms",
-                (unsigned long)pressedCount,
-                (long long)processingDelayMs
-            );
+                ESP_LOGI(
+                    TAG,
+                    "Button pressed: %lu | Confirmation delay: %lld ms",
+                    (unsigned long)pressedCount,
+                    (long long)confirmationDelayMs
+                );
+            } else if (level == 1) {
+                buttonPressed = false;
+            }
         }
     }
 }
