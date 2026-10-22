@@ -1,118 +1,144 @@
-#include <Arduino.h>
+#include <stdint.h>
 
-constexpr uint8_t PIN_OUT = 18;
-constexpr uint8_t PIN_IN = 15;
+#include "driver/gpio.h"
+#include "esp_err.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-constexpr uint32_t INTERVAL_MS = 2000;
-constexpr uint32_t DEBOUNCE_US = 5000;
-constexpr uint8_t N = 10;
+constexpr gpio_num_t RED_PIN    = GPIO_NUM_15;
+constexpr gpio_num_t YELLOW_PIN = GPIO_NUM_16;
+constexpr gpio_num_t GREEN_PIN  = GPIO_NUM_17;
 
-volatile bool event = false;
-volatile uint32_t edgeTime = 0;
+constexpr uint8_t RED_MASK    = 1U << 0;
+constexpr uint8_t YELLOW_MASK = 1U << 1;
+constexpr uint8_t GREEN_MASK  = 1U << 2;
 
-uint32_t switchTime = 0;
-uint32_t previousMillis = 0;
+struct TrafficState {
+    uint8_t pin_mask;
+    uint32_t duration_ms;
+    bool blink;
+};
 
-bool relayOn = false;
-bool waiting = false;
+enum class State: uint8_t {
+    GREEN,
+    GREEN_BLINK,
+    YELLOW,
+    RED,
+    RED_YELLOW,
+    COUNT
+};
 
-uint32_t onSum = 0;
-uint32_t offSum = 0;
-uint8_t onCount = 0;
-uint8_t offCount = 0;
+constexpr TrafficState STATES[] = {
+    { GREEN_MASK,                10000, false },
+    { GREEN_MASK,                 2000, true  },
+    { YELLOW_MASK,                3000, false },
+    { RED_MASK,                  10000, false },
+    { RED_MASK | YELLOW_MASK,     3000, false }
+};
 
-void IRAM_ATTR contactISR() {
-    if (!event)
+constexpr gpio_num_t PINS[] = {
+    RED_PIN,
+    YELLOW_PIN,
+    GREEN_PIN
+};
+
+constexpr uint8_t PIN_MASKS[] = {
+    RED_MASK,
+    YELLOW_MASK,
+    GREEN_MASK
+};
+
+constexpr uint32_t BLINK_INTERVAL_MS = 250;
+constexpr uint32_t LOOP_INTERVAL_MS = 10;
+
+static State current_state = State::GREEN;
+
+static int64_t state_start_us = 0;
+static int64_t last_blink_us = 0;
+
+static bool blink_on = true;
+
+static void set_lights(uint8_t mask)
+{
+    for (uint8_t i = 0; i < 3; ++i)
     {
-        edgeTime = micros();
-        event = true;
+        const bool enabled = (mask & PIN_MASKS[i]) != 0;
+        ESP_ERROR_CHECK(gpio_set_level(PINS[i], enabled ? 1 : 0));
     }
 }
 
-void setup() {
-    Serial.begin(115200);
-    pinMode(PIN_OUT, OUTPUT);
-    pinMode(PIN_IN, INPUT_PULLUP);
-    digitalWrite(PIN_OUT, LOW);
+static void init_gpio()
+{
+    gpio_config_t config = {};
 
-    attachInterrupt(
-        digitalPinToInterrupt(PIN_IN),
-        contactISR,
-        CHANGE
-    );
+    config.pin_bit_mask =
+        (1ULL << RED_PIN) |
+        (1ULL << YELLOW_PIN) |
+        (1ULL << GREEN_PIN);
+
+    config.mode = GPIO_MODE_OUTPUT;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config.intr_type = GPIO_INTR_DISABLE;
+
+    ESP_ERROR_CHECK(gpio_config(&config));
+
+    set_lights(0);
 }
 
-void loop() {
-    uint32_t now = millis();
+static void next_state()
+{
+    uint8_t next = static_cast<uint8_t>(current_state) + 1;
 
-    if (!waiting &&
-        (onCount < N || offCount < N) &&
-        now - previousMillis >= INTERVAL_MS)
+    if (next >= static_cast<uint8_t>(State::COUNT))
     {
-        previousMillis = now;
-        relayOn = !relayOn;
-
-        noInterrupts();
-        event = false;
-        interrupts();
-
-        switchTime = micros();
-        digitalWrite(PIN_OUT, relayOn ? HIGH : LOW);
-        waiting = true;
+        next = 0;
     }
 
-    if (waiting && event)
+    current_state = static_cast<State>(next);
+
+    const int64_t now = esp_timer_get_time();
+
+    state_start_us = now;
+    last_blink_us = now;
+    blink_on = true;
+
+    set_lights(STATES[static_cast<uint8_t>(current_state)].pin_mask);
+}
+
+static void update_state()
+{
+    const int64_t now = esp_timer_get_time();
+
+    const TrafficState& state = STATES[static_cast<uint8_t>(current_state)];
+
+    if (now - state_start_us >= static_cast<int64_t>(state.duration_ms) * 1000)
     {
-        uint32_t edge;
-
-        noInterrupts();
-        edge = edgeTime;
-        interrupts();
-
-        if (micros() - edge >= DEBOUNCE_US) {
-            uint8_t state = digitalRead(PIN_IN);
-
-            if (state == (relayOn ? LOW : HIGH)) {
-                uint32_t elapsed = edge - switchTime;
-
-                if (relayOn && onCount < N) {
-                    onSum += elapsed;
-                    onCount++;
-
-                    Serial.print("ON #");
-                    Serial.print(onCount);
-                    Serial.print(": ");
-                    Serial.print(elapsed);
-                    Serial.println(" us");
-                } else if (!relayOn && offCount < N) {
-                    offSum += elapsed;
-                    offCount++;
-
-                    Serial.print("OFF #");
-                    Serial.print(offCount);
-                    Serial.print(": ");
-                    Serial.print(elapsed);
-                    Serial.println(" us");
-                }
-
-                waiting = false;
-            }
-
-            noInterrupts();
-            event = false;
-            interrupts();
-        }
+        next_state();
+        return;
     }
 
-    if (onCount == N && offCount == N) {
-        Serial.print("Average ON: ");
-        Serial.print(onSum / N);
-        Serial.println(" us");
+    if (state.blink && now - last_blink_us >= static_cast<int64_t>(BLINK_INTERVAL_MS) * 1000)
+    {
+        last_blink_us = now;
+        blink_on = !blink_on;
 
-        Serial.print("Average OFF: ");
-        Serial.print(offSum / N);
-        Serial.println(" us");
+        set_lights(blink_on ? state.pin_mask : 0);
+    }
+}
 
-        while (true) {}
+extern "C" void app_main(void)
+{
+    init_gpio();
+
+    state_start_us = esp_timer_get_time();
+    last_blink_us = state_start_us;
+
+    set_lights(STATES[static_cast<uint8_t>(current_state)].pin_mask);
+
+    while (true) {
+        update_state();
+        vTaskDelay(pdMS_TO_TICKS(LOOP_INTERVAL_MS));
     }
 }
