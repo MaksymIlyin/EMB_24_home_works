@@ -1,144 +1,141 @@
-#include <stdint.h>
+#include <array>
+#include <cstdint>
+
+#include "esp_err.h"
+#include "esp_log.h"
 
 #include "driver/gpio.h"
-#include "esp_err.h"
-#include "esp_timer.h"
+#include "esp_adc/adc_oneshot.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-constexpr gpio_num_t RED_PIN    = GPIO_NUM_15;
-constexpr gpio_num_t YELLOW_PIN = GPIO_NUM_16;
-constexpr gpio_num_t GREEN_PIN  = GPIO_NUM_17;
+namespace {
 
-constexpr uint8_t RED_MASK    = 1U << 0;
-constexpr uint8_t YELLOW_MASK = 1U << 1;
-constexpr uint8_t GREEN_MASK  = 1U << 2;
+constexpr char kTag[] = "SMA";
 
-struct TrafficState {
-    uint8_t pin_mask;
-    uint32_t duration_ms;
-    bool blink;
-};
+constexpr adc_channel_t kChannel = ADC_CHANNEL_3; // GPIO4, ADC1
+constexpr gpio_num_t kLedPin = GPIO_NUM_18;
 
-enum class State: uint8_t {
-    GREEN,
-    GREEN_BLINK,
-    YELLOW,
-    RED,
-    RED_YELLOW,
-    COUNT
-};
+constexpr int kPeriodMs = 100;
 
-constexpr TrafficState STATES[] = {
-    { GREEN_MASK,                10000, false },
-    { GREEN_MASK,                 2000, true  },
-    { YELLOW_MASK,                3000, false },
-    { RED_MASK,                  10000, false },
-    { RED_MASK | YELLOW_MASK,     3000, false }
-};
+constexpr std::size_t kWindowSize = 10;
 
-constexpr gpio_num_t PINS[] = {
-    RED_PIN,
-    YELLOW_PIN,
-    GREEN_PIN
-};
+constexpr int kDarkThreshold = 1800;
+constexpr int kLightThreshold = 2200;
 
-constexpr uint8_t PIN_MASKS[] = {
-    RED_MASK,
-    YELLOW_MASK,
-    GREEN_MASK
-};
-
-constexpr uint32_t BLINK_INTERVAL_MS = 250;
-constexpr uint32_t LOOP_INTERVAL_MS = 10;
-
-static State current_state = State::GREEN;
-
-static int64_t state_start_us = 0;
-static int64_t last_blink_us = 0;
-
-static bool blink_on = true;
-
-static void set_lights(uint8_t mask)
-{
-    for (uint8_t i = 0; i < 3; ++i)
+class SimpleMovingAverage {
+public:
+    int update(int value)
     {
-        const bool enabled = (mask & PIN_MASKS[i]) != 0;
-        ESP_ERROR_CHECK(gpio_set_level(PINS[i], enabled ? 1 : 0));
-    }
-}
+        if (count_ < kWindowSize) {
+            buffer_[index_] = value;
+            sum_ += value;
+            count_++;
+        } else {
+            sum_ -= buffer_[index_];
+            buffer_[index_] = value;
+            sum_ += value;
+        }
 
-static void init_gpio()
-{
-    gpio_config_t config = {};
+        index_ = (index_ + 1) % kWindowSize;
 
-    config.pin_bit_mask =
-        (1ULL << RED_PIN) |
-        (1ULL << YELLOW_PIN) |
-        (1ULL << GREEN_PIN);
-
-    config.mode = GPIO_MODE_OUTPUT;
-    config.pull_up_en = GPIO_PULLUP_DISABLE;
-    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    config.intr_type = GPIO_INTR_DISABLE;
-
-    ESP_ERROR_CHECK(gpio_config(&config));
-
-    set_lights(0);
-}
-
-static void next_state()
-{
-    uint8_t next = static_cast<uint8_t>(current_state) + 1;
-
-    if (next >= static_cast<uint8_t>(State::COUNT))
-    {
-        next = 0;
+        return static_cast<int>(sum_ / count_);
     }
 
-    current_state = static_cast<State>(next);
+private:
+    std::array<int, kWindowSize> buffer_{};
 
-    const int64_t now = esp_timer_get_time();
+    std::size_t index_ = 0;
+    std::size_t count_ = 0;
 
-    state_start_us = now;
-    last_blink_us = now;
-    blink_on = true;
+    int64_t sum_ = 0;
+};
 
-    set_lights(STATES[static_cast<uint8_t>(current_state)].pin_mask);
-}
+} // namespace
 
-static void update_state()
+extern "C" void app_main()
 {
-    const int64_t now = esp_timer_get_time();
+    // ADC initialization
+    adc_oneshot_unit_handle_t adc = nullptr;
 
-    const TrafficState& state = STATES[static_cast<uint8_t>(current_state)];
+    adc_oneshot_unit_init_cfg_t unitConfig{};
+    unitConfig.unit_id = ADC_UNIT_1;
+    unitConfig.ulp_mode = ADC_ULP_MODE_DISABLE;
 
-    if (now - state_start_us >= static_cast<int64_t>(state.duration_ms) * 1000)
-    {
-        next_state();
-        return;
-    }
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(&unitConfig, &adc)
+    );
 
-    if (state.blink && now - last_blink_us >= static_cast<int64_t>(BLINK_INTERVAL_MS) * 1000)
-    {
-        last_blink_us = now;
-        blink_on = !blink_on;
+    adc_oneshot_chan_cfg_t channelConfig{};
+    channelConfig.atten = ADC_ATTEN_DB_12;
+    channelConfig.bitwidth = ADC_BITWIDTH_12;
 
-        set_lights(blink_on ? state.pin_mask : 0);
-    }
-}
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc,
+            kChannel,
+            &channelConfig
+        )
+    );
 
-extern "C" void app_main(void)
-{
-    init_gpio();
+    // LED initialization
+    const gpio_config_t ledConfig = {
+        .pin_bit_mask = (1ULL << kLedPin),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
 
-    state_start_us = esp_timer_get_time();
-    last_blink_us = state_start_us;
+    ESP_ERROR_CHECK(gpio_config(&ledConfig));
+    ESP_ERROR_CHECK(gpio_set_level(kLedPin, 0));
 
-    set_lights(STATES[static_cast<uint8_t>(current_state)].pin_mask);
+    // SMA initialization
+    SimpleMovingAverage sma;
+
+    bool ledOn = false;
+
+    const TickType_t periodTicks =
+        pdMS_TO_TICKS(kPeriodMs);
+
+    configASSERT(periodTicks > 0);
+
+    TickType_t lastWake = xTaskGetTickCount();
 
     while (true) {
-        update_state();
-        vTaskDelay(pdMS_TO_TICKS(LOOP_INTERVAL_MS));
+        int raw = 0;
+
+        const esp_err_t readError =
+            adc_oneshot_read(adc, kChannel, &raw);
+
+        if (readError == ESP_OK) {
+            const int filtered = sma.update(raw);
+
+            // Hysteresis
+            if (!ledOn && filtered < kDarkThreshold) {
+                ledOn = true;
+                gpio_set_level(kLedPin, 1);
+            } else if (ledOn && filtered > kLightThreshold) {
+                ledOn = false;
+                gpio_set_level(kLedPin, 0);
+            }
+
+            ESP_LOGI(
+                kTag,
+                "raw=%d | SMA=%d | LED=%s",
+                raw,
+                filtered,
+                ledOn ? "ON" : "OFF"
+            );
+        } else {
+            ESP_LOGW(
+                kTag,
+                "ADC read failed: %s",
+                esp_err_to_name(readError)
+            );
+        }
+
+        vTaskDelayUntil(&lastWake, periodTicks);
     }
 }
