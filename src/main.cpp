@@ -1,147 +1,209 @@
-
-#include <cstdint>
-#include <cstdio>
-
-#include "esp_err.h"
-#include "esp_log.h"
-
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-namespace {
+#include "driver/gpio.h"
+#include "driver/ledc.h"
 
-constexpr char kTag[] = "ADC_CAL";
+#include "esp_err.h"
+#include "esp_log.h"
 
-constexpr adc_channel_t kChannel = ADC_CHANNEL_3; // GPIO4
-constexpr adc_atten_t kAttenuation = ADC_ATTEN_DB_12;
-constexpr adc_bitwidth_t kBitwidth = ADC_BITWIDTH_12;
+// ==================== Configuration ====================
 
-constexpr int kPeriodMs = 100;
+#define BUZZER_GPIO GPIO_NUM_12
 
-constexpr double kManualFullScaleMv = 3100.0;
-constexpr double kMaxRaw = 4095.0;
+#define PWM_MODE        LEDC_LOW_SPEED_MODE
+#define PWM_TIMER       LEDC_TIMER_0
+#define PWM_CHANNEL     LEDC_CHANNEL_0
+#define PWM_RESOLUTION  LEDC_TIMER_10_BIT
 
-adc_oneshot_unit_handle_t adc = nullptr;
-adc_cali_handle_t calibration = nullptr;
+#define PWM_DUTY        512
+#define NOTE_DELAY_MS   50
+#define MELODY_PAUSE_MS 2000
 
-void initializeAdc()
+static const char *TAG = "BUZZER";
+
+// ==================== Musical Notes ====================
+
+#define NOTE_C4  262
+#define NOTE_D4  294
+#define NOTE_E4  330
+#define NOTE_F4  349
+#define NOTE_G4  392
+#define NOTE_A4  440
+#define NOTE_B4  494
+#define NOTE_C5  523
+
+// ==================== Note Structure ====================
+
+typedef struct {
+    uint32_t frequency;
+    uint32_t duration_ms;
+} note_t;
+
+// ==================== Melody ====================
+
+// Twinkle Twinkle Little Star
+
+static const note_t melody[] = {
+    {NOTE_C4, 500},
+    {NOTE_C4, 500},
+    {NOTE_G4, 500},
+    {NOTE_G4, 500},
+    {NOTE_A4, 500},
+    {NOTE_A4, 500},
+    {NOTE_G4, 1000},
+
+    {NOTE_F4, 500},
+    {NOTE_F4, 500},
+    {NOTE_E4, 500},
+    {NOTE_E4, 500},
+    {NOTE_D4, 500},
+    {NOTE_D4, 500},
+    {NOTE_C4, 1000},
+
+    {NOTE_G4, 500},
+    {NOTE_G4, 500},
+    {NOTE_F4, 500},
+    {NOTE_F4, 500},
+    {NOTE_E4, 500},
+    {NOTE_E4, 500},
+    {NOTE_D4, 1000},
+
+    {NOTE_G4, 500},
+    {NOTE_G4, 500},
+    {NOTE_F4, 500},
+    {NOTE_F4, 500},
+    {NOTE_E4, 500},
+    {NOTE_E4, 500},
+    {NOTE_D4, 1000},
+
+    {NOTE_C4, 500},
+    {NOTE_C4, 500},
+    {NOTE_G4, 500},
+    {NOTE_G4, 500},
+    {NOTE_A4, 500},
+    {NOTE_A4, 500},
+    {NOTE_G4, 1000},
+
+    {NOTE_F4, 500},
+    {NOTE_F4, 500},
+    {NOTE_E4, 500},
+    {NOTE_E4, 500},
+    {NOTE_D4, 500},
+    {NOTE_D4, 500},
+    {NOTE_C4, 1000}
+};
+
+#define MELODY_LENGTH (sizeof(melody) / sizeof(melody[0]))
+
+// ==================== PWM Initialization ====================
+
+static void pwm_init(void)
 {
-    adc_oneshot_unit_init_cfg_t unitConfig{};
-    unitConfig.unit_id = ADC_UNIT_1;
-    unitConfig.ulp_mode = ADC_ULP_MODE_DISABLE;
+    ledc_timer_config_t timer_config = {};
 
+    timer_config.speed_mode = PWM_MODE;
+    timer_config.timer_num = PWM_TIMER;
+    timer_config.duty_resolution = PWM_RESOLUTION;
+    timer_config.freq_hz = NOTE_C4;
+    timer_config.clk_cfg = LEDC_AUTO_CLK;
+
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
+
+    ledc_channel_config_t channel_config = {};
+
+    channel_config.gpio_num = BUZZER_GPIO;
+    channel_config.speed_mode = PWM_MODE;
+    channel_config.channel = PWM_CHANNEL;
+    channel_config.timer_sel = PWM_TIMER;
+    channel_config.duty = 0;
+    channel_config.hpoint = 0;
+
+    ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
+
+    ESP_LOGI(TAG, "LEDC initialized");
+}
+
+// ==================== Stop Sound ====================
+
+static void stop_sound(void)
+{
     ESP_ERROR_CHECK(
-        adc_oneshot_new_unit(&unitConfig, &adc)
+        ledc_set_duty(PWM_MODE, PWM_CHANNEL, 0)
     );
 
-    adc_oneshot_chan_cfg_t channelConfig{};
-    channelConfig.atten = kAttenuation;
-    channelConfig.bitwidth = kBitwidth;
-
     ESP_ERROR_CHECK(
-        adc_oneshot_config_channel(
-            adc,
-            kChannel,
-            &channelConfig
-        )
+        ledc_update_duty(PWM_MODE, PWM_CHANNEL)
     );
 }
 
-void initializeCalibration()
-{
-    adc_cali_curve_fitting_config_t calibrationConfig{};
+// ==================== Play Note ====================
 
-    calibrationConfig.unit_id = ADC_UNIT_1;
-    calibrationConfig.chan = kChannel;
-    calibrationConfig.atten = kAttenuation;
-    calibrationConfig.bitwidth = kBitwidth;
+static void play_note(uint32_t frequency, uint32_t duration_ms)
+{
+    if (frequency == 0) {
+        stop_sound();
+        vTaskDelay(pdMS_TO_TICKS(duration_ms));
+        return;
+    }
 
     ESP_ERROR_CHECK(
-        adc_cali_create_scheme_curve_fitting(
-            &calibrationConfig,
-            &calibration
-        )
+        ledc_set_freq(PWM_MODE, PWM_TIMER, frequency)
     );
+
+    ESP_ERROR_CHECK(
+        ledc_set_duty(PWM_MODE, PWM_CHANNEL, PWM_DUTY)
+    );
+
+    ESP_ERROR_CHECK(
+        ledc_update_duty(PWM_MODE, PWM_CHANNEL)
+    );
+
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+
+    stop_sound();
+
+    vTaskDelay(pdMS_TO_TICKS(NOTE_DELAY_MS));
 }
 
-} // namespace
+// ==================== Play Melody ====================
 
-extern "C" void app_main()
+static void play_melody(const note_t *notes, size_t length)
 {
-    initializeAdc();
-    initializeCalibration();
+    for (size_t i = 0; i < length; i++) {
+        ESP_LOGI(
+            TAG,
+            "Note: %lu Hz, duration: %lu ms",
+            (unsigned long)notes[i].frequency,
+            (unsigned long)notes[i].duration_ms
+        );
 
-    printf("\n");
-    printf(" RAW | U_manual(mV) | U_cali(mV) | Error(%%)\n");
-    printf("------------------------------------------\n");
+        play_note(
+            notes[i].frequency,
+            notes[i].duration_ms
+        );
+    }
 
-    const TickType_t periodTicks =
-        pdMS_TO_TICKS(kPeriodMs);
+    stop_sound();
+}
 
-    configASSERT(periodTicks > 0);
+// ==================== Main ====================
 
-    TickType_t lastWake = xTaskGetTickCount();
+extern "C" void app_main(void)
+{
+    ESP_LOGI(TAG, "Starting buzzer synthesizer");
 
-    while (true) {
-        int raw = 0;
-        int calibratedMv = 0;
+    pwm_init();
 
-        const esp_err_t readError =
-            adc_oneshot_read(adc, kChannel, &raw);
+    while (1) {
+        play_melody(melody, MELODY_LENGTH);
 
-        if (readError == ESP_OK) {
+        ESP_LOGI(TAG, "Melody finished");
 
-            // 1. Manual voltage calculation
-            const double manualMv =
-                (raw / kMaxRaw) * kManualFullScaleMv;
-
-            // 2. Calibrated voltage
-            const esp_err_t calibrationError =
-                adc_cali_raw_to_voltage(
-                    calibration,
-                    raw,
-                    &calibratedMv
-                );
-
-            if (calibrationError == ESP_OK) {
-
-                // 3. Error calculation
-                double errorPercent = 0.0;
-
-                if (calibratedMv != 0) {
-                    errorPercent =
-                        (manualMv - calibratedMv) /
-                        calibratedMv * 100.0;
-                }
-
-                printf(
-                    "%4d | %12.1f | %10d | %7.2f\n",
-                    raw,
-                    manualMv,
-                    calibratedMv,
-                    errorPercent
-                );
-
-            } else {
-                ESP_LOGE(
-                    kTag,
-                    "Calibration failed: %s",
-                    esp_err_to_name(calibrationError)
-                );
-            }
-
-        } else {
-            ESP_LOGE(
-                kTag,
-                "ADC read failed: %s",
-                esp_err_to_name(readError)
-            );
-        }
-
-        vTaskDelayUntil(&lastWake, periodTicks);
+        vTaskDelay(pdMS_TO_TICKS(MELODY_PAUSE_MS));
     }
 }
